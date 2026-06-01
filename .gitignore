@@ -32,5 +32,20 @@ Videos/*.mkv
 # Copyrighted IEEE figures
 geometric_control_figures/*.gif
 
+# Media and working folders
+CreateUSDScreenshots/
+Videos/
+figures/
+geometric_control_figures/
+geometric_control_results/
+report_plots/f450_sim_euler/
+report_plots/f450_sim_rk4/
+report_plots/f450_throttle/
+report_plots/f450_wrench/
+report_plots/ideal_quadrotor/
+report_plots/plot_controller_report.py
+report_plots/plot_experiment_comparison.py
+report_plots/report.tex
+
 # The simulator fork lives in its own repo
 fsc_PegasusSimulator/

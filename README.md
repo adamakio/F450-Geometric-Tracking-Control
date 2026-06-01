@@ -119,6 +119,8 @@ The standalone Python PoC ([geometric_control_poc/simulate_geometric_control.py]
 
 Closed-loop results with the F450 USD model in IsaacSim, controlled via ROS2:
 
+[![F450 Elliptic Helix — IsaacSim](https://img.youtube.com/vi/NtHqXnJP3k4/maxresdefault.jpg)](https://www.youtube.com/watch?v=NtHqXnJP3k4)
+
 | Trajectory | Position RMSE |
 |------------|:-------------:|
 | Hover | see report |
@@ -126,7 +128,7 @@ Closed-loop results with the F450 USD model in IsaacSim, controlled via ROS2:
 | Figure-eight | see report |
 | Elliptic helix | see report |
 
-Result plots are in [geometric_control_results/report_plots/](geometric_control_results/report_plots/).
+Result plots are in [report_plots/experiment_plots/](report_plots/experiment_plots/).
 
 ---
 
