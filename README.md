@@ -95,7 +95,9 @@ M  = -kR·eR - kΩ·eΩ + Ω×J·Ω - J·(Ω̂·R^T·R_des·Ω_des - R^T·R_des�
 
 ## F450 CAD and USD Model
 
-The DJI F450 was modelled from scratch in OnShape with accurate physical properties (mass, inertia tensor, rotor placement, thrust curves) derived from manufacturer specs and thrust stand measurements.
+![DJI F450 CAD Model](figures/cad_f450.png)
+
+The DJI F450 was modelled from scratch in [OnShape](https://cad.onshape.com/documents/c36e41c34d802f63cd0866ac/w/d43c612491018fd22f34ef37/e/cb6cef04226dd87406ba2877) with accurate physical properties (mass, inertia tensor, rotor placement, thrust curves) derived from manufacturer specs and thrust stand measurements.
 
 The model was exported as a USD file via the NVIDIA OnShape importer and integrated into [fsc_PegasusSimulator](https://github.com/adamakio/fsc_PegasusSimulator) (see `extensions/pegasus.simulator/pegasus/simulator/assets/Robots/F450/`).
 

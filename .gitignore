@@ -35,7 +35,8 @@ geometric_control_figures/*.gif
 # Media and working folders
 CreateUSDScreenshots/
 Videos/
-figures/
+figures/*
+!figures/cad_f450.png
 geometric_control_figures/
 geometric_control_results/
 report_plots/f450_sim_euler/
