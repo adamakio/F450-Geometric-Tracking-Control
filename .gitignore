@@ -1,0 +1,36 @@
+.DS_Store
+Thumbs.db
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.venv/
+.ipynb_checkpoints/
+
+# ROS2 build artifacts
+build/
+install/
+log/
+
+# Admin documents
+Admin/
+
+# Working folders not for publication
+ClaudeFolder/
+Report/
+
+# Reference papers (copyrighted)
+Ref/
+
+# Large ROS2 bag files
+geometric_control_results/bag_files/
+report_plots/**/*.db3
+
+# Raw video recordings (keep only mp4)
+Videos/*.mkv
+
+# Copyrighted IEEE figures
+geometric_control_figures/*.gif
+
+# The simulator fork lives in its own repo
+fsc_PegasusSimulator/

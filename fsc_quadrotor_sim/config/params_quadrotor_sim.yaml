@@ -1,0 +1,23 @@
+/**/quadrotor_sim_node:
+  ros__parameters:
+
+    publish_rate: 250.0   # Hz — must match or exceed the control loop rate
+
+    # Physical parameters (must match fsc_geometric_controller config)
+    g: 9.8065   # m/s^2
+    m: 1.806    # kg
+    J_xx: 0.016 # kg*m^2
+    J_yy: 0.017 # kg*m^2
+    J_zz: 0.024 # kg*m^2
+    d: 0.215    # m, distance from the centre of the drone to each rotor
+    k_f: 9.7237 # N, thrust coefficient  (F_i = k_f * u_i)
+    k_m: 8e-2   # N*m, moment coefficient
+
+    input_delay: 0.0  # s, throttle transport delay
+    integrator: 'euler'   # integration scheme: 'rk4' or 'euler'
+
+    # Initial conditions (world frame)
+    x0: [0.0, 0.0, 1.0]     # m
+    v0: [0.0, 0.0, 0.0]     # m/s
+    q0: [0.0, 0.0, 0.0, 1.0]  # xyzw quaternion (identity = level)
+    omega0: [0.0, 0.0, 0.0]  # rad/s

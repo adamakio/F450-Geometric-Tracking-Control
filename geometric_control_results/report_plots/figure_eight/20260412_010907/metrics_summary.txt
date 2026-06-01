@@ -1,0 +1,10 @@
+[general]
+rms_position_error_m: 0.638557
+max_position_error_m: 1.443467
+mean_position_error_m: 0.562919
+rms_attitude_error_deg: 2.367474
+max_attitude_error_deg: 7.515948
+throttle_saturation_fraction: 0.000000
+throttle_max: 0.511935
+throttle_min: 0.388831
+

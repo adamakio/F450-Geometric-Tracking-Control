@@ -1,0 +1,26 @@
+/**/geometric_control_node:
+  ros__parameters:
+
+    publish_rate: 250.0   # Hz
+
+    # Position (outer loop) — slower, well-damped
+    k_x: 1.0
+    k_v: 1.7    # ζ ≈ 0.7 × 2 × sqrt(k_x/m) × m
+
+    # Attitude (inner loop) — much faster
+    k_R: 1.5 # 0.6    # ω_n ≈ 9.7 rad/s → ~10:1 ratio
+    k_Omega: 0.4 # 0.12
+    k_R_yaw: 1.0 # 0.8
+    k_Omega_yaw: 0.35 # 0.15
+
+
+    # Physical parameters
+    g: 9.8065   # m/s^2
+    m: 1.806    # kg
+    J_xx: 0.016 # kg*m^2
+    J_yy: 0.017 # kg*m^2
+    J_zz: 0.024 # kg*m^2
+    d: 0.215    # m, distance from the center of the drone to each rotor
+    k_f: 9.7237 # N, thrust coefficient
+    k_m: 8e-2   # N*m, moment coefficient in LinearThrustCurve
+

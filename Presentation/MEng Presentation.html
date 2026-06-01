@@ -1,0 +1,1655 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Validating Isaac Sim — MEng Presentation</title>
+  <script src="deck-stage.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Crimson+Pro:ital,wght@0,400;0,600;0,700;1,400&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+  <script>
+    document.addEventListener("DOMContentLoaded", function() {
+      renderMathInElement(document.body, {
+        delimiters: [
+          {left: "$$", right: "$$", display: true},
+          {left: "\\(", right: "\\)", display: false}
+        ],
+        throwOnError: false,
+        trust: true
+      });
+    });
+  </script>
+
+<script type="application/json" id="speaker-notes">
+[
+  "Good morning everyone. My name is Zouhair Adam Hamaimou, and today I will present my MEng project on validating Isaac Sim as a high-fidelity simulation environment for aerial robotics. The specific case study is an F450 quadrotor controlled by a geometric tracking controller on SE(3). The main idea of the project is not to propose a new controller, but to use a well-understood controller as a measurement instrument for studying simulator fidelity.",
+
+  "The motivation comes from the FSC Lab workflow. Isaac Sim and Pegasus are useful tools for developing aerial robotics algorithms before going to hardware, but simulation error is hard to interpret. If a drone fails to track a trajectory perfectly in simulation, that error can come from the controller, the vehicle model, or the simulator physics. So the core question is: how faithful is Isaac Sim for this type of quadrotor control experiment, and how much of the observed error comes from the simulator versus the model we give it?",
+
+  "The approach I used was to fix the controller and vary only the simulation configuration. The controller is the geometric tracking controller from Lee, Leok, and McClamroch. It is a strong choice because it is formulated directly on SE(3), avoids local attitude singularities, and has known stability properties. By holding the controller, gains, and reference trajectory fixed, changes in tracking error can be interpreted as consequences of modelling choices in the simulation pipeline.",
+
+  "The first step was building a realistic F450 model. I created a full CAD assembly in OnShape, including the frame, landing gear, Pixhawk, battery, motors, propellers, and wiring box. The purpose was not just visual realism. The CAD model gives the mass, centre of gravity, and inertia estimates needed by the controller and simulator. The assembly origin was aligned with the centre of mass because the controller assumes the body-frame origin is at the vehicle CoG.",
+
+  "These are the physical parameters used in the simulation. The total mass is 1.806 kilograms, with diagonal inertia values taken from the CAD model. I also bench-tested the motor-propeller thrust curve and fit a linear model from normalized throttle to thrust. The slope is about 9.72 newtons. The linear model is not perfect at very low throttle, but it is reasonable in the operating range around hover, which is where this trajectory spends most of its time.",
+
+  "This slide shows the overall simulation stack. Geometry and mass properties start in OnShape. The vehicle is then converted into a USD asset for Isaac Sim. Isaac Sim runs the PhysX physics engine, Pegasus provides the quadrotor abstraction layer, and the controller runs externally as a ROS 2 node. A lot of the project time went into making this pipeline reproducible, especially because importing a custom articulated drone into Isaac Sim has several non-obvious steps.",
+
+  "The first major part of the presentation is the USD asset creation procedure. I included this in detail because it is one of the reusable outputs of the project for the lab. The goal is to turn the CAD assembly into an Isaac Sim asset that Pegasus can actually control, with the correct hierarchy, rotor names, revolute joints, masses, inertias, and articulation root.",
+
+  "The first small but important step is setting the OnShape workspace units to metres. This sounds trivial, but it matters because the importer interprets the model scale directly. If the units are wrong here, the vehicle will enter Isaac Sim at the wrong scale, and then all the mass and inertia properties become inconsistent with the controller model.",
+
+  "Next, the OnShape assembly has to be structured carefully. I used one main body part and four separate rotor parts. Each rotor is connected to the body through a revolute joint. This separation is important because Pegasus expects to find individual rotor prims and joints in the USD hierarchy. If the CAD is exported as one combined mesh, it may look correct visually, but it will not behave as the intended articulated vehicle.",
+
+  "The third preparation step is aligning the assembly origin with the centre of mass. This is important because the controller equations are written about the centre of mass, and the simulator forces and moments are much easier to interpret when the body frame is centred there. In OnShape this was done using the mass-properties readout and a mate connector at the CoG.",
+
+  "Once the OnShape model is prepared, I authenticate the OnShape account through the browser. This is required before Isaac Sim can access the cloud assembly through its OnShape importer. It is a simple step, but in practice it is one of those setup details that can slow down someone trying to reproduce the workflow.",
+
+  "The next step is importing the vehicle assembly into Isaac Sim. From the file menu, I used Import from OnShape, selected the project, and selected the vehicle sub-assembly. This produces a USD stage, but it is not yet usable by Pegasus. The importer creates a deeply nested hierarchy and asks for settings before the hierarchy is in its final form.",
+
+  "When the importer shows this parts dialog asking for material and mass settings, I close it without assigning masses. The reason is that the USD prim hierarchy will still be reorganized later. If masses are assigned too early, they may end up on the wrong prims or become harder to manage. I assign the physics mass and inertia properties manually after the hierarchy is finalized.",
+
+  "After the initial import, I save a flattened copy of the USD file. The OnShape importer creates references and nested structure that are difficult to edit directly. Saving a flattened file collapses the imported hierarchy into a single editable USD layer. That makes it possible to move prims, rename rotors, and add the physics components that Pegasus expects.",
+
+  "After saving the flattened copy, I close the current stage and reopen the flattened USD file. This step is mainly about making sure the file being edited is the flattened one, not the original imported reference structure. From this point onward, the USD stage becomes editable enough to prepare the Pegasus-compatible hierarchy.",
+
+  "This slide shows the hierarchy cleanup. Initially the model is double nested, something like World, vehicle, vehicle, then the body, rotors, and joints. Pegasus expects the body and rotors directly under the top-level vehicle prim. So I move the children of the inner vehicle up one level, delete the empty inner vehicle, and keep a clean top-level vehicle structure.",
+
+  "Next, each rotor is renamed according to the Pegasus convention: rotor0 through rotor3. These names are not just cosmetic. They are used in topic names and in the mapping between rotor index, spin direction, and control allocation. What matters is that the naming is consistent with the spin-direction vector and the allocation matrix used by the controller.",
+
+  "For the revolute joints, I inspect the joint properties to see which rotor the joint is attached to. Then I rename each joint to match the rotor it actuates, for example joint0 for rotor0. This prevents ambiguity later when debugging the articulation. It also makes the USD structure easier to understand for anyone else reusing the asset.",
+
+  "Before moving joints in the USD hierarchy, Isaac Sim requires the relevant prims to be non-instanceable. If instanceable remains checked, reparenting can fail or behave unexpectedly. So I uncheck Instanceable on the body and rotor prims before moving the joints under their corresponding rotors.",
+
+  "Then each joint is reparented underneath its matching rotor, and the default Environment prim is deleted. The environment prim is just an automatically generated ground and lighting object. It is not part of the vehicle asset and should not be saved into the reusable drone model. The final hierarchy is vehicle, body, rotor0 through rotor3, with each rotor owning its joint.",
+
+  "Now that the hierarchy is correct, I add the physics components. The top-level vehicle prim gets an Articulation Root. Each child Xform, including the body and rotors, gets a Mass component. This tells Isaac Sim that the vehicle should be treated as an articulated rigid-body system rather than just a visual mesh.",
+
+  "The mass properties are then entered manually in the Raw USD Properties panel. For each body and rotor, I assign the centre of mass, diagonal inertia, and mass values from the CAD model. The key point here is consistency: the parameters used in the controller, the custom solver, and the Isaac Sim asset should match as closely as possible.",
+
+  "One subtle issue was rotor inertia. Mechanically, the off-axis inertia terms for the rotors are extremely small, but setting them exactly to zero caused Pegasus or Isaac Sim to crash. The fix was to enter a very small non-zero value, about 1e-7 kilogram metre squared, for the x and y inertia components. The UI may round it visually to zero, but the underlying value is still written correctly.",
+
+  "The next step is simply saving the final USD asset. At this point the asset has the cleaned hierarchy, renamed rotors and joints, an articulation root, mass components, and valid inertia values. This saved file is the one that can be loaded from Pegasus and reused for future F450 simulation experiments.",
+
+  "This is the completed F450 asset opened from Pegasus Simulator. The important point is that this is not only a visual CAD model. It is an articulated simulation asset with a structure that matches the controller and the ROS 2 interface. With the vehicle pipeline established, the next part of the project is the controller used to benchmark the simulator.",
+
+  "The second major part of the presentation is the geometric controller. I used the Lee et al. controller because it provides a clean theoretical baseline. The vehicle state is position and attitude on SE(3). The controller defines attitude error directly on SO(3), rather than using Euler angles. That avoids singularities and makes the controller appropriate for large-angle motion, even though the benchmark trajectory here is smooth.",
+
+  "Here I summarize the main dynamics and error coordinates. The attitude error function Psi measures the discrepancy between the current attitude and desired attitude. The vector e_R is derived from that error function, and e_Omega compares angular velocities in the correct body-frame coordinates. The controller has a trajectory-tracking stage, which chooses the desired thrust direction, and an attitude-tracking stage, which drives the vehicle toward that desired attitude.",
+
+  "Proposition 1 is the attitude stability result. The Lyapunov function combines rotational kinetic energy in the angular-velocity error with the attitude error function Psi. Under the stated initial conditions, the derivative of the Lyapunov function is negative definite, which gives exponential convergence of the attitude error. Practically, this means the attitude controller is not just intuitive PD control; it has a formal stability guarantee on SO(3).",
+
+  "Proposition 2 extends the result to the complete translational and rotational system. The proof adds position and velocity error terms, plus a cross term between position and velocity. The main complication is that translation depends on attitude through the thrust direction, so attitude error appears as a coupling term. With suitable gains and an initial attitude error below 90 degrees, the full tracking error converges exponentially.",
+
+  "Proposition 3 explains why the controller is almost-global. It relaxes the initial attitude condition to allow almost any attitude error below 180 degrees. The idea is that Proposition 1 first drives the attitude into the smaller region where Proposition 2 applies. During that initial interval, translational error remains bounded. After that, the full exponential convergence result takes over. The only excluded set is the measure-zero set of exact 180-degree attitude flips.",
+
+  "This implementation slide has two important points. First, Isaac Sim uses a z-up convention, while Lee's paper uses the opposite convention. That flips the sign of gravity compensation and the desired thrust direction, so the implemented A vector and b3d expression are sign-adjusted consistently. Second, Omega_d and Omega_dot_d are derived analytically from the trajectory derivatives up to snap, avoiding noisy numerical differentiation. On the right is the allocation matrix mapping rotor throttles to total thrust and body moments.",
+
+  "This section transitions from controller theory to the benchmark itself. The goal now is to use the controller and vehicle model as a controlled experiment. The controller, gains, trajectory, and physical parameters remain fixed. Only the physics path and force-application model change. That way the differences in tracking error can be interpreted as differences in simulator fidelity and modelling assumptions.",
+
+  "There are five benchmark configurations. E1 is the simplest baseline: a single rigid body with thrust and moment applied at the centre of mass in PhysX. E2 uses the full F450 articulation but still applies lumped force and moment at the body. E3 distributes forces to the rotor links. E4 replaces Isaac Sim with a custom RK4 ROS 2 solver. E5 is the same custom solver but with forward Euler integration. Each comparison isolates one modelling change.",
+
+  "Variant A is the Isaac Sim and Pegasus pipeline used for E1, E2, and E3. Isaac Sim runs the physics, Pegasus reads the simulator state through the Dynamic Control API, republishes that state to ROS 2, receives control commands from the controller, and applies forces or rotor commands back into Isaac Sim. The controller itself remains a ROS 2 node outside Isaac Sim.",
+
+  "Variant B is the custom solver pipeline used for E4 and E5. Isaac Sim and Pegasus are removed entirely. A custom ROS 2 node receives the same rotor commands, integrates the rigid-body equations directly using either RK4 or forward Euler, and publishes the same state topics. This makes it a one-block replacement for the simulator while keeping the controller and trajectory publisher unchanged.",
+
+  "This slide lists the ROS 2 topic bundles. The state bundle includes pose, twist, acceleration, and jerk. The desired trajectory bundle includes position, velocity, acceleration, jerk, snap, yaw, yaw rate, and yaw acceleration. The control bundle includes one normalized throttle command per rotor. The important implementation point is that all variants expose the same interface to the controller, so the controller does not need to know which physics engine is running.",
+
+  "The reference trajectory is an ascending elliptic helix. The x and y axes trace an ellipse with unequal semi-axes, the z axis climbs at 0.1 metres per second, and yaw rotates continuously. This trajectory is smooth, but it exercises all four controllable degrees of freedom: lateral motion, vertical motion, and yaw. It runs for three full revolutions, long enough for persistent modelling errors to become visible.",
+
+  "The position-error plot shows the clearest separation between configurations. There is an initial transient as the vehicle pulls from rest onto the moving reference. After that, E1 has the largest sustained error. E2 and E3 are better but still show noticeable error. E4 and E5 remain very close to zero. This already suggests that the custom rigid-body solver matches the nominal controller model much more closely than the PhysX path.",
+
+  "This slide shows attitude tracking and rotor throttle behaviour. The important observation is that yaw tracking remains well behaved and the throttle commands stay inside reasonable bounds. So the large differences in position tracking are not caused by obvious controller saturation or loss of yaw control. The controller is producing reasonable commands across all configurations, which strengthens the interpretation that the physics path is the dominant difference.",
+
+  "These are the headline metrics. E1 through E3, which use Isaac Sim PhysX, have RMS position errors on the order of 13 to 37 centimetres after the transient. E4 and E5, the custom solvers, are below about one centimetre. That is roughly a fifteen-times improvement with identical controller gains and vehicle parameters. The main conclusion is that, for this smooth helix trajectory, the dominant error source is the PhysX and Pegasus simulation path, not the CAD vehicle model itself.",
+
+  "To conclude, the project produced three main outputs. First, a reusable CAD-to-USD pipeline for the F450 vehicle. Second, a ROS 2 implementation of the geometric tracking controller with analytical feed-forward terms. Third, a five-configuration benchmark that separates the effects of articulation, force distribution, and numerical integration. The main result is that the custom solver tracks much closer to the nominal model than Isaac Sim PhysX on this trajectory. Future work should include hardware validation, direct measurement of the yaw moment coefficient, and tighter investigation of PhysX solver settings.",
+
+  "This final demo shows the E3 configuration, which is the most physically faithful Isaac Sim configuration in the benchmark. It uses the F450 articulation and distributed rotor forces in Isaac Sim. When showing this video, I would emphasize that visually the trajectory looks good, but the quantitative plots show that even visually plausible simulation can hide centimetre- to decimetre-level tracking differences.",
+
+  "Thank you for listening. I am happy to take questions. In particular, I would be interested in discussing the interpretation of the E3 to E4 gap, what PhysX settings should be investigated next, and how this validation ladder could be extended to hardware experiments with the real F450."
+]
+</script>
+
+  <style>
+    :root {
+      --bg:           #ffffff;
+      --bg-alt:       #f4f4f2;
+      --rule:         #e0ddd9;
+      --ink:          #0f1117;
+      --ink-2:        #353842;
+      --ink-3:        #6e717c;
+      --accent:       oklch(0.42 0.16 232);
+      --accent-mid:   oklch(0.58 0.14 232);
+      --accent-light: oklch(0.95 0.04 232);
+      --navy:         #0c1524;
+      --serif:        'Crimson Pro', Georgia, serif;
+      --sans:         'Inter', system-ui, sans-serif;
+      --mono:         'IBM Plex Mono', monospace;
+    }
+
+    deck-stage { background: #111; }
+
+    section {
+      background: var(--bg);
+      font-family: var(--sans);
+      color: var(--ink);
+      overflow: hidden;
+    }
+
+    /* ── Base slide ─────────────────────────────── */
+    .s {
+      width: 100%; height: 100%;
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+      padding: 90px 110px 72px;
+    }
+    .s-tight { padding: 72px 110px 56px; }
+
+    /* ── Typography ─────────────────────────────── */
+    .tag {
+      font-family: var(--mono);
+      font-size: 24px;
+      color: var(--accent);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin: 0 0 16px;
+    }
+    .title {
+      font-family: var(--serif);
+      font-size: 64px;
+      font-weight: 700;
+      line-height: 1.1;
+      letter-spacing: -0.01em;
+      color: var(--ink);
+      margin: 0 0 44px;
+    }
+    .title.sm { font-size: 52px; margin-bottom: 28px; }
+    .title.xs { font-size: 44px; margin-bottom: 24px; }
+    .body  { font-size: 34px; line-height: 1.55; color: var(--ink-2); }
+    .small { font-size: 28px; line-height: 1.5;  color: var(--ink-3); }
+    code {
+      font-family: var(--mono);
+      font-size: 0.86em;
+      background: var(--bg-alt);
+      border: 1px solid var(--rule);
+      border-radius: 4px;
+      padding: 2px 7px;
+    }
+
+    /* ── Section header ─────────────────────────── */
+    .shdr {
+      background: var(--navy);
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      padding: 90px 150px 110px;
+    }
+    .shdr .part  { font-family: var(--mono); font-size: 24px; color: var(--accent-mid); letter-spacing: 0.1em; text-transform: uppercase; margin: 0 0 20px; }
+    .shdr .st    { font-family: var(--serif); font-size: 90px; font-weight: 700; color: #fff; line-height: 1.05; margin: 0 0 36px; max-width: 1300px; }
+    .shdr .sd    { font-size: 34px; color: rgba(255,255,255,0.5); line-height: 1.5; max-width: 1100px; }
+
+    /* ── Grid helpers ───────────────────────────── */
+    .two { flex: 1; display: grid; gap: 60px; }
+    .c5050 { grid-template-columns: 1fr 1fr; }
+    .c4060 { grid-template-columns: 4fr 6fr; }
+    .c6040 { grid-template-columns: 6fr 4fr; }
+
+    /* ── Bullets ────────────────────────────────── */
+    .bl { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 22px; }
+    .bl li { font-size: 34px; line-height: 1.45; color: var(--ink-2); padding-left: 36px; position: relative; }
+    .bl li::before { content:''; position: absolute; left: 0; top: 13px; width: 11px; height: 11px; border-radius: 50%; background: var(--accent); }
+    .bl.sm li { font-size: 28px; }
+    .bl.sm li::before { top: 10px; }
+
+    /* ── Callout ────────────────────────────────── */
+    .call {
+      background: var(--accent-light);
+      border-left: 5px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      padding: 20px 26px;
+      font-size: 28px; line-height: 1.5; color: var(--ink);
+    }
+    .call-warn { background: oklch(0.97 0.03 50); border-left-color: oklch(0.64 0.18 50); }
+    .call-warn strong { color: oklch(0.48 0.18 50); }
+
+    /* ── Math blocks ────────────────────────────── */
+    .mbox {
+      background: var(--bg-alt);
+      border: 1px solid var(--rule);
+      border-radius: 6px;
+      padding: 24px 32px;
+      line-height: 1.9;
+      font-size: 29px;
+    }
+    .mbox .katex { font-size: 1em; }
+
+    /* ── Proposition / Definition box ──────────── */
+    .pbox {
+      border: 1.5px solid var(--rule);
+      border-radius: 8px;
+      padding: 24px 30px;
+    }
+    .pbox .plabel { font-family: var(--mono); font-size: 24px; color: var(--accent); letter-spacing: 0.06em; text-transform: uppercase; margin: 0 0 10px; }
+    .pbox .ptext  { font-family: var(--serif); font-size: 29px; line-height: 1.5; color: var(--ink-2); }
+    .defbox {
+      border: 1.5px solid oklch(0.7 0.1 232);
+      background: var(--accent-light);
+      border-radius: 8px;
+      padding: 24px 30px;
+    }
+    .defbox .dlabel { font-family: var(--mono); font-size: 24px; color: var(--accent); letter-spacing: 0.06em; text-transform: uppercase; margin: 0 0 10px; }
+    .defbox .dtext  { font-family: var(--serif); font-size: 28px; line-height: 1.5; color: var(--ink-2); }
+
+    /* ── Table ──────────────────────────────────── */
+    .dt { width: 100%; border-collapse: collapse; font-size: 27px; }
+    .dt th { font-size: 24px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-3); padding: 14px 18px; border-bottom: 2px solid var(--ink); text-align: left; }
+    .dt td { padding: 16px 18px; border-bottom: 1px solid var(--rule); color: var(--ink-2); line-height: 1.35; }
+    .dt tr:last-child td { border-bottom: none; }
+    .dt .num { font-family: var(--mono); font-size: 25px; }
+    .dt .hi td  { background: var(--accent-light); color: var(--ink); font-weight: 600; }
+    .dt .hi .num { color: var(--accent); font-weight: 700; }
+
+    /* ── USD screenshot (no frame) ──────────────── */
+    .img-full { width: 100%; height: 100%; object-fit: contain; object-position: top center; display: block; }
+    .img-top  { width: 100%; height: 100%; object-fit: contain; object-position: top; display: block; }
+
+    /* ── Experiment rows ────────────────────────── */
+    .erow { display: grid; grid-template-columns: 56px 210px 1fr 300px; align-items: center; padding: 18px 24px; border-bottom: 1px solid var(--rule); }
+    .erow:first-child { border-top: 2px solid var(--ink); }
+    .erow:last-child  { border-bottom: 2px solid var(--ink); }
+    .erow .eid   { font-family: var(--mono); font-size: 26px; font-weight: 600; color: var(--accent); }
+    .erow .ename { font-size: 27px; font-weight: 600; color: var(--ink); }
+    .erow .edesc { font-size: 25px; color: var(--ink-2); line-height: 1.4; padding: 0 14px; }
+    .erow .eint  { font-family: var(--mono); font-size: 23px; color: var(--ink-3); text-align: right; }
+    .erow.hi { background: var(--accent-light); }
+    .erow.hi .eint { color: var(--accent); }
+
+    /* ── Video ──────────────────────────────────── */
+    .vid { flex: 1; background: #000; border-radius: 6px; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+    .vid video { max-width: 100%; max-height: 100%; object-fit: contain; }
+
+    /* ── Title slide ────────────────────────────── */
+    .title-slide { background: #fff; display: flex; flex-direction: column; justify-content: center; padding: 90px 150px; border-left: 8px solid var(--accent); }
+    .title-slide .mt { font-family: var(--serif); font-size: 60px; font-weight: 700; line-height: 1.15; letter-spacing: -0.01em; color: var(--ink); margin: 0 0 48px; max-width: 1380px; }
+    .title-slide .meta { font-size: 28px; color: var(--ink-3); line-height: 1.75; border-top: 1px solid var(--rule); padding-top: 36px; }
+    .title-slide .meta strong { color: var(--ink-2); }
+
+    /* ── Plot frame ─────────────────────────────── */
+    .pf { overflow: hidden; display: flex; align-items: center; justify-content: center; }
+    .pf img { max-width: 100%; max-height: 100%; object-fit: contain; }
+
+    /* ── ROS2 block diagram ─────────────────────── */
+    .bd-row { display: flex; align-items: center; gap: 0; width: 100%; }
+    .bd-box {
+      border: 2px solid var(--rule);
+      border-radius: 8px;
+      padding: 16px 20px;
+      text-align: center;
+      font-size: 26px;
+      font-weight: 600;
+      color: var(--ink);
+      line-height: 1.3;
+      flex-shrink: 0;
+    }
+    .bd-box.phys  { background: oklch(0.96 0.04 40);  border-color: oklch(0.75 0.1 40); }
+    .bd-box.peg   { background: oklch(0.96 0.05 70);  border-color: oklch(0.75 0.1 70); }
+    .bd-box.mw    { background: oklch(0.95 0.04 145); border-color: oklch(0.7 0.1 145); }
+    .bd-box.ctrl  { background: oklch(0.94 0.04 232); border-color: oklch(0.7 0.1 232); }
+    .bd-box.traj  { background: oklch(0.94 0.04 232); border-color: oklch(0.7 0.1 232); }
+    .bd-box.cust  { background: oklch(0.96 0.03 10);  border-color: oklch(0.7 0.1 10); }
+    .bd-arrow {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      padding: 0 6px;
+    }
+    .bd-lbl  { font-size: 22px; color: var(--ink-2); font-family: var(--mono); }
+    .bd-line { height: 2px; background: var(--ink-3); position: relative; width: 100%; }
+    .bd-line::after { content:'▶'; position: absolute; right: -8px; top: -9px; color: var(--ink-3); font-size: 16px; }
+    .bd-line.rev::before { content:'◀'; position: absolute; left: -8px; top: -9px; color: var(--ink-3); font-size: 16px; }
+    .bd-vert-wrap { display: flex; flex-direction: column; align-items: center; gap: 0; }
+    .bd-vert { width: 2px; background: var(--ink-3); position: relative; }
+    .bd-vert::after { content:'▼'; position: absolute; bottom: -10px; left: -5px; color: var(--ink-3); font-size: 16px; }
+
+    /* ── Thank you slide ────────────────────────── */
+    .ty-slide {
+      background: var(--navy);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      text-align: center;
+    }
+    .ty-slide .tytitle { font-family: var(--serif); font-size: 110px; font-weight: 700; color: white; margin: 0 0 40px; }
+    .ty-slide .tymeta  { font-size: 32px; color: rgba(255,255,255,0.55); line-height: 1.7; }
+  </style>
+</head>
+<body>
+<deck-stage width="1920" height="1080">
+
+<!-- 01 TITLE ──────────────────────────────────── -->
+<section data-label="01 Title">
+  <div class="title-slide">
+    <div class="tag">MEng Project · UTIAS Flight Systems and Control Lab</div>
+    <h1 class="mt">Validating Isaac Sim as a High-Fidelity<br>Aerial-Robotics Simulator:<br>A Geometric-Controller Benchmark on the F450 Quadrotor</h1>
+    <div class="meta">
+      <strong>Zouhair Adam Hamaimou</strong><br>
+      Supervised by Dr. Hugh Liu &nbsp;·&nbsp; University of Toronto Institute for Aerospace Studies<br>
+      April 2026
+    </div>
+  </div>
+</section>
+
+<!-- 02 MOTIVATION ────────────────────────────── -->
+<section data-label="02 Motivation">
+  <div class="s">
+    <div class="tag">Background</div>
+    <h2 class="title">Motivation</h2>
+    <div class="two c5050">
+      <div style="display:flex;flex-direction:column;gap:28px">
+        <ul class="bl">
+          <li>FSC Lab uses <strong>Isaac Sim + Pegasus</strong> to develop algorithms for the F450 quadrotor</li>
+          <li>Before sim-to-real transfer: <em>how faithful is the simulation?</em></li>
+          <li>Tracking error confounds three sources simultaneously</li>
+        </ul>
+        <div class="call">
+          Controller imperfection &nbsp;+&nbsp; vehicle-model imperfection &nbsp;+&nbsp; simulator imperfection = observed error
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:24px">
+        <div class="body" style="font-size:30px;font-weight:600">Two research questions:</div>
+        <div class="pbox">
+          <div class="plabel">(i)</div>
+          <div class="ptext" style="font-style:normal;font-size:28px">How faithful is Isaac Sim's PhysX rigid-body simulation to the physics encountered on hardware?</div>
+        </div>
+        <div class="pbox">
+          <div class="plabel">(ii)</div>
+          <div class="ptext" style="font-style:normal;font-size:28px">How much of any discrepancy is attributable to the simulator versus the vehicle model?</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 03 APPROACH ──────────────────────────────── -->
+<section data-label="03 Approach">
+  <div class="s">
+    <div class="tag">Experimental Design</div>
+    <h2 class="title">Controller as a Fixed Measurement Instrument</h2>
+    <div class="two c5050">
+      <div style="display:flex;flex-direction:column;gap:28px">
+        <ul class="bl">
+          <li>Use the <strong>geometric tracking controller</strong> (Lee et al., 2010) as a fixed, theoretically characterised instrument</li>
+          <li>Almost-globally exponentially stable on SE(3) — closed-loop behaviour fully known</li>
+          <li><strong>Fix the controller.</strong> Vary only the simulation configuration.</li>
+          <li>Any change in tracking error → attributable to <strong>modelling assumptions alone</strong></li>
+        </ul>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px">
+        <img src="assets/quadrotor_model.png" style="max-width:100%;max-height:440px;object-fit:contain">
+        <div class="small" style="text-align:center;font-size:26px">Body-frame convention — Lee et al. (2010)</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 04 F450 CAD ──────────────────────────────── -->
+<section data-label="04 F450 CAD">
+  <div class="s">
+    <div class="tag">Vehicle Modelling</div>
+    <h2 class="title">F450 CAD Model</h2>
+    <div class="two c4060">
+      <div style="display:flex;flex-direction:column;gap:24px;justify-content:center">
+        <ul class="bl sm">
+          <li>Full assembly in <strong>OnShape</strong>: frame, landing gear, Pixhawk, LiPo, 4× motor + prop, wiring box</li>
+          <li>All components modelled to measured dimensions</li>
+          <li>Mass properties (CoG, inertia) extracted from OnShape's mass-properties tool</li>
+          <li>Assembly origin <strong>aligned with CoG</strong> via mate connector</li>
+          <li>Total CAD mass: <strong>1.806 kg</strong> — matches measured vehicle</li>
+        </ul>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:center">
+        <img src="assets/cad_f450.png" style="max-width:100%;max-height:780px;object-fit:contain">
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 05 PARAMETERS + THRUST ───────────────────── -->
+<section data-label="05 Physical Parameters">
+  <div class="s">
+    <div class="tag">Vehicle Modelling</div>
+    <h2 class="title">Physical Parameters &amp; Thrust Curve</h2>
+    <div class="two c5050" style="align-items:start">
+      <div style="display:flex;flex-direction:column;gap:28px">
+        <table class="dt">
+          <thead><tr><th>Symbol</th><th>Quantity</th><th style="text-align:right">Value</th></tr></thead>
+          <tbody>
+            <tr><td>\(m\)</td><td>Total mass</td><td class="num" style="text-align:right">1.806 kg</td></tr>
+            <tr><td>\(J_{xx}\)</td><td>Roll inertia</td><td class="num" style="text-align:right">0.016 kg·m²</td></tr>
+            <tr><td>\(J_{yy}\)</td><td>Pitch inertia</td><td class="num" style="text-align:right">0.017 kg·m²</td></tr>
+            <tr><td>\(J_{zz}\)</td><td>Yaw inertia</td><td class="num" style="text-align:right">0.024 kg·m²</td></tr>
+            <tr><td>\(d\)</td><td>Arm length (CoG → rotor)</td><td class="num" style="text-align:right">0.215 m</td></tr>
+            <tr><td>\(k_f\)</td><td>Thrust coefficient</td><td class="num" style="text-align:right">9.7237 N</td></tr>
+          </tbody>
+        </table>
+        <div class="call" style="font-size:27px">\(f_i = k_f\,u_i\) — linear model, bench-validated</div>
+      </div>
+      <div class="pf" style="height:100%">
+        <img src="assets/thrust_curve.png">
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 06 SIMULATION STACK ─────────────────────── -->
+<section data-label="06 Simulation Stack">
+  <div class="s">
+    <div class="tag">System Architecture</div>
+    <h2 class="title">Simulation Stack</h2>
+    <div style="flex:1;display:flex;align-items:center">
+      <table style="width:100%;border-collapse:separate;border-spacing:0;table-layout:fixed">
+        <tr>
+          <td style="text-align:center;padding:0 20px;vertical-align:middle">
+            <div style="background:var(--bg-alt);border:2px solid var(--rule);border-radius:12px;padding:36px 20px;font-size:30px;font-weight:600;color:var(--ink);line-height:1.3">OnShape</div>
+          </td>
+          <td style="text-align:center;padding:0;vertical-align:middle;width:60px;color:var(--accent);font-size:44px;font-weight:300">→</td>
+          <td style="text-align:center;padding:0 20px;vertical-align:middle">
+            <div style="background:var(--bg-alt);border:2px solid var(--rule);border-radius:12px;padding:36px 20px;font-size:28px;font-weight:600;color:var(--ink);line-height:1.4">USD<br>Asset</div>
+          </td>
+          <td style="text-align:center;padding:0;vertical-align:middle;width:60px;color:var(--accent);font-size:44px;font-weight:300">→</td>
+          <td style="text-align:center;padding:0 20px;vertical-align:middle">
+            <div style="background:oklch(0.96 0.04 40);border:2px solid oklch(0.75 0.1 40);border-radius:12px;padding:36px 20px;font-size:26px;font-weight:600;color:var(--ink);line-height:1.5">Isaac Sim<br><span style="opacity:0.55;font-size:22px">PhysX</span></div>
+          </td>
+          <td style="text-align:center;padding:0;vertical-align:middle;width:60px;color:var(--accent);font-size:44px;font-weight:300">→</td>
+          <td style="text-align:center;padding:0 20px;vertical-align:middle">
+            <div style="background:oklch(0.96 0.05 70);border:2px solid oklch(0.75 0.1 70);border-radius:12px;padding:36px 20px;font-size:26px;font-weight:600;color:var(--ink);line-height:1.4">Pegasus<br>Simulator</div>
+          </td>
+          <td style="text-align:center;padding:0;vertical-align:middle;width:60px;color:var(--accent);font-size:44px;font-weight:300">↔</td>
+          <td style="text-align:center;padding:0 20px;vertical-align:middle">
+            <div style="background:oklch(0.94 0.04 232);border:2px solid oklch(0.7 0.1 232);border-radius:12px;padding:36px 20px;font-size:26px;font-weight:600;color:var(--ink);line-height:1.4">ROS 2<br>Controller</div>
+          </td>
+        </tr>
+        <tr>
+          <td style="text-align:center;padding:20px 20px 0;font-size:25px;color:var(--ink-3)">CAD + mass properties</td>
+          <td></td>
+          <td style="text-align:center;padding:20px 20px 0;font-size:25px;color:var(--ink-3)">Articulated F450 + physics prims</td>
+          <td></td>
+          <td style="text-align:center;padding:20px 20px 0;font-size:25px;color:var(--ink-3)">Physics engine + rendering</td>
+          <td></td>
+          <td style="text-align:center;padding:20px 20px 0;font-size:25px;color:var(--ink-3)">Quadrotor abstraction</td>
+          <td></td>
+          <td style="text-align:center;padding:20px 20px 0;font-size:25px;color:var(--ink-3)">Geometric controller node</td>
+        </tr>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- 07 SECTION: USD ──────────────────────────── -->
+<section data-label="07 USD Section">
+  <div class="shdr">
+    <div class="part">Part I of III</div>
+    <div class="st">USD Asset<br>Creation</div>
+    <div class="sd">OnShape → Isaac Sim → Pegasus-compatible articulated USD · Steps 1–10</div>
+  </div>
+</section>
+
+<!-- 08 USD 1.1 ───────────────────────────────── -->
+<section data-label="08 USD Step 1.1">
+  <div class="s" style="padding-bottom:60px">
+    <div class="tag">USD Creation · Step 1.1</div>
+    <h2 class="title sm">Set Workspace Units to Metres</h2>
+    <div style="flex:1"><img src="assets/usd/01_workspace_units.png" class="img-full"></div>
+  </div>
+</section>
+
+<!-- 09 USD 1.2 ───────────────────────────────── -->
+<section data-label="09 USD Step 1.2">
+  <div class="s" style="padding-bottom:60px">
+    <div class="tag">USD Creation · Step 1.2</div>
+    <h2 class="title sm">Assembly: One Body, Four Rotors, Four Revolute Joints</h2>
+    <div style="flex:1"><img src="assets/usd/02_assembly_structure.png" class="img-full"></div>
+  </div>
+</section>
+
+<!-- 10 USD 1.3 ───────────────────────────────── -->
+<section data-label="10 USD Step 1.3">
+  <div class="s" style="padding-bottom:60px">
+    <div class="tag">USD Creation · Step 1.3</div>
+    <h2 class="title sm">Align Assembly Origin with Centre of Mass</h2>
+    <div style="flex:1"><img src="assets/usd/03_origin_at_com.png" class="img-full"></div>
+  </div>
+</section>
+
+<!-- 11 USD 2.1 ───────────────────────────────── -->
+<section data-label="11 USD Step 2.1">
+  <div class="s" style="padding-bottom:60px">
+    <div class="tag">USD Creation · Step 2.1</div>
+    <h2 class="title sm">Authenticate OnShape in the Browser</h2>
+    <div style="flex:1"><img src="assets/usd/04_onshape_signin.png" class="img-full"></div>
+  </div>
+</section>
+
+<!-- 12 USD 2.2 ───────────────────────────────── -->
+<section data-label="12 USD Step 2.2">
+  <div class="s" style="padding-bottom:60px">
+    <div class="tag">USD Creation · Step 2.2</div>
+    <h2 class="title sm">File → Import from OnShape → Select the Vehicle Assembly</h2>
+    <div style="flex:1"><img src="assets/usd/05_onshape_importer.png" class="img-full"></div>
+  </div>
+</section>
+
+<!-- 13 USD 2.3 ───────────────────────────────── -->
+<section data-label="13 USD Step 2.3">
+  <div class="s" style="padding-bottom:60px">
+    <div class="tag">USD Creation · Step 2.3</div>
+    <h2 class="title sm">Close Parts Dialog Without Setting Masses</h2>
+    <div style="flex:1"><img src="assets/usd/06_importer_skip_mass.png" class="img-full"></div>
+  </div>
+</section>
+
+<!-- 14 USD 3.1 ───────────────────────────────── -->
+<section data-label="14 USD Step 3.1">
+  <div class="s" style="padding-bottom:60px">
+    <div class="tag">USD Creation · Step 3.1</div>
+    <h2 class="title sm">File → Save Flattened As</h2>
+    <div style="flex:1"><img src="assets/usd/07a_save_flattened.png" class="img-full"></div>
+  </div>
+</section>
+
+<!-- 15 USD 3.2 ───────────────────────────────── -->
+<section data-label="15 USD Step 3.2">
+  <div class="s" style="padding-bottom:60px">
+    <div class="tag">USD Creation · Step 3.2</div>
+    <h2 class="title sm">Confirm Save, Then Reopen the Flattened File</h2>
+    <div style="flex:1"><img src="assets/usd/07b_open_flattened.png" class="img-full"></div>
+  </div>
+</section>
+
+<!-- 16 USD 4.1 + 4.2 ────────────────────────── -->
+<section data-label="16 USD Steps 4.1 & 4.2">
+  <div class="s" style="padding-bottom:60px">
+    <div class="tag">USD Creation · Steps 4.1 &amp; 4.2</div>
+    <h2 class="title sm">Restructure Hierarchy: Initial State → Move Children Up One Level</h2>
+    <div style="flex:1;display:grid;grid-template-columns:1fr 1fr;gap:48px">
+      <img src="assets/usd/08_hierarchy_initial.png" class="img-top">
+      <img src="assets/usd/09_hierarchy_after_move.png" class="img-top">
+    </div>
+  </div>
+</section>
+
+<!-- 17 USD 5.1 ───────────────────────────────── -->
+<section data-label="17 USD Step 5.1">
+  <div class="s" style="padding-bottom:60px">
+    <div class="tag">USD Creation · Step 5.1</div>
+    <h2 class="title sm">Rename Rotors to Pegasus Convention: rotor0 … rotor3</h2>
+    <div style="flex:1"><img src="assets/usd/12a_rename_rotor.png" class="img-full"></div>
+  </div>
+</section>
+
+<!-- 18 USD 5.2 ───────────────────────────────── -->
+<section data-label="18 USD Step 5.2">
+  <div class="s" style="padding-bottom:60px">
+    <div class="tag">USD Creation · Step 5.2</div>
+    <h2 class="title sm">Read Body 0/1 Attachment Paths to Identify Each Joint's Rotor</h2>
+    <div style="flex:1"><img src="assets/usd/12b_revolute_props.png" class="img-full"></div>
+  </div>
+</section>
+
+<!-- 19a USD 5.3 INSTANCEABLE ─────────────────── -->
+<section data-label="19a USD Step 5.3">
+  <div class="s" style="padding-bottom:60px">
+    <div class="tag">USD Creation · Step 5.3</div>
+    <h2 class="title sm">Uncheck Instanceable on Each Body and Rotor Before Reparenting Joints</h2>
+    <div style="flex:1"><img src="assets/usd/instanceable_check.png" class="img-full" style="height: 757.52px"></div>
+  </div>
+</section>
+
+<!-- 19 USD 6 + 7 ─────────────────────────────── -->
+<section data-label="19 USD Steps 6 & 7">
+  <div class="s" style="padding-bottom:60px">
+    <div class="tag">USD Creation · Steps 6 &amp; 7</div>
+    <h2 class="title sm">Reparent Joints Under Their Rotors, Then Delete the Environment Prim</h2>
+    <div style="flex:1;display:grid;grid-template-columns:1fr 1fr;gap:48px">
+      <img src="assets/usd/10_hierarchy_final.png" class="img-top">
+      <img src="assets/usd/11_delete_environment.png" class="img-top">
+    </div>
+  </div>
+</section>
+
+<!-- 20 USD 8.1 + 8.2 ────────────────────────── -->
+<section data-label="20 USD Steps 8.1 & 8.2">
+  <div class="s" style="padding-bottom:60px">
+    <div class="tag">USD Creation · Steps 8.1 &amp; 8.2</div>
+    <h2 class="title sm">Add Articulation Root on vehicle, Add Mass on Each Child Xform</h2>
+    <div style="flex:1;display:grid;grid-template-columns:1fr 1fr;gap:48px">
+      <img src="assets/usd/13_articulation_root.png" class="img-top">
+      <img src="assets/usd/14_add_mass.png" class="img-top">
+    </div>
+  </div>
+</section>
+
+<!-- 21 USD 8.3 ───────────────────────────────── -->
+<section data-label="21 USD Step 8.3">
+  <div class="s" style="padding-bottom:60px">
+    <div class="tag">USD Creation · Step 8.3</div>
+    <h2 class="title sm">Enter CoM, Diagonal Inertia, and Mass in Raw USD Properties</h2>
+    <div style="flex:1;display:grid;grid-template-columns:1fr 1fr;gap:48px">
+      <img src="assets/usd/15_mass_before.png" class="img-top" style="height: 1064.69px">
+      <img src="assets/usd/16_mass_after.png" class="img-top" style="height: 1064.7px">
+    </div>
+  </div>
+</section>
+
+<!-- 22 USD 9 ─────────────────────────────────── -->
+<section data-label="22 USD Step 9">
+  <div class="s" style="padding-bottom:60px">
+    <div class="tag">USD Creation · Step 9</div>
+    <h2 class="title sm">Rotor Off-Axis Inertia: Enter 1×10⁻⁷ for x and y Components</h2>
+    <div style="flex:1;display:grid;grid-template-columns:1fr 1fr;gap:48px">
+      <img src="assets/usd/17_inertia_ui_gotcha.png" class="img-top" style="height: 1074.73px">
+      <img src="assets/usd/Selection_148.png" class="img-top" style="height: 1071.38px">
+    </div>
+  </div>
+</section>
+
+<!-- 23 USD 10.1 SAVE ────────────────────────── -->
+<section data-label="23 USD Step 10.1">
+  <div class="s" style="padding-bottom:60px">
+    <div class="tag">USD Creation · Step 10.1</div>
+    <h2 class="title sm">File → Save As the Final USD Asset</h2>
+    <div style="flex:1"><img src="assets/usd/save_usd_009.png" class="img-full"></div>
+  </div>
+</section>
+
+<!-- 24 USD 10.2 FINAL ───────────────────────── -->
+<section data-label="24 USD Step 10.2">
+  <div class="s" style="padding-bottom:60px">
+    <div class="tag">USD Creation · Step 10.2</div>
+    <h2 class="title sm">Completed F450 USD Asset in Pegasus Simulator</h2>
+    <div style="flex:1"><img src="assets/usd/18_final_drone.png" class="img-full"></div>
+  </div>
+</section>
+
+<!-- 25 SECTION: CONTROL ─────────────────────── -->
+<section data-label="25 Control Section">
+  <div class="shdr">
+    <div class="part">Part II of III</div>
+    <div class="st">Geometric Control<br>on SE(3)</div>
+    <div class="sd">Lee et al. (2010) — dynamics, error coordinates, stability, feed-forward</div>
+  </div>
+</section>
+
+<!-- 26 DYNAMICS & ERRORS ────────────────────── -->
+<section data-label="26 Dynamics & Errors">
+  <div class="s s-tight">
+    <div class="tag">Geometric Control</div>
+    <h2 class="title sm" style="margin-bottom:18px">Dynamics &amp; Error Coordinates on SE(3)</h2>
+
+    <div style="flex:1;display:grid;grid-template-rows:420px 1fr;gap:22px;min-height:0">
+
+      <!-- Top row: compact theory summary -->
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:28px;min-height:0">
+
+        <!-- Card 1: Dynamics -->
+        <div style="display:flex;flex-direction:column;gap:12px;min-height:0">
+          <div class="body" style="font-size:23px;font-weight:600;border-bottom:1px solid var(--rule);padding-bottom:6px">
+            Quadrotor Dynamics
+          </div>
+          <div class="mbox" style="font-size:22px;padding:16px 20px;line-height:1.75">
+            \(m\ddot{x} = f R e_3 - mg e_3\)<br><br>
+            \(J\dot{\Omega} = -\Omega \times J\Omega + M\)
+          </div>
+
+          <div class="call" style="font-size:20px;padding:14px 18px;line-height:1.45">
+            Configuration: \((x,R)\in\mathrm{SE}(3)\), with \(R\in\mathrm{SO}(3)\) and \(\Omega\) expressed in the body frame.
+          </div>
+        </div>
+
+        <!-- Card 2: Error coordinates -->
+        <div style="display:flex;flex-direction:column;gap:12px;min-height:0">
+          <div class="body" style="font-size:23px;font-weight:600;border-bottom:1px solid var(--rule);padding-bottom:6px">
+            Error Coordinates
+          </div>
+          <div class="mbox" style="font-size:21px;padding:14px 18px;line-height:1.7">
+            \(\Psi(R,R_d)=\tfrac{1}{2}\operatorname{tr}(I-R_d^TR)=1-\cos\theta \in [0, 2]\)<br><br>
+            \(e_x = x-x_d,\quad e_v = \dot{x}-\dot{x}_d\)<br><br>
+            \(e_R=\tfrac{1}{2}(R_d^TR-R^TR_d)^\vee\)<br><br>
+            \(e_\Omega=\Omega-R^TR_d\Omega_d\)
+          </div>
+
+          <div class="call" style="font-size:20px;padding:12px 16px;line-height:1.4">
+            \(e_R\in\mathfrak{so}(3)\): no Euler-angle singularities or quaternion sign ambiguity.
+          </div>
+        </div>
+
+        <!-- Card 3: Controller construction -->
+        <div style="display:flex;flex-direction:column;gap:12px;min-height:0">
+          <div class="body" style="font-size:23px;font-weight:600;border-bottom:1px solid var(--rule);padding-bottom:6px">
+            Controller Construction
+          </div>
+
+          <div class="body" style="font-size:21px;font-weight:600;color:var(--accent);margin-bottom:-4px">
+            Trajectory tracking
+          </div>
+          <div class="mbox" style="font-size:21px;padding:13px 17px;line-height:1.6">
+            \(A=-k_xe_x-k_ve_v-mge_3+m\ddot{x}_d\)<br>
+            \(\vec b_{3d}=-A/\|A\|,\quad f=-A\cdot Re_3\)
+          </div>
+
+          <div class="body" style="font-size:21px;font-weight:600;color:var(--accent);margin-bottom:-4px">
+            Attitude tracking
+          </div>
+          <div class="mbox" style="font-size:21px;padding:13px 17px;line-height:1.55">
+            \(\vec b_{2d}=\dfrac{\vec b_{3d}\times\vec b_{1d}}
+            {\|\vec b_{3d}\times\vec b_{1d}\|} \rightarrow R_d=[\vec b_{2d}\times\vec b_{3d},\vec b_{2d},\vec b_{3d}]\)<br><br>
+            \(M=-k_Re_R-k_\Omega e_\Omega+\Omega{\times}J\Omega\)<br>
+            \(\quad -J(\hat{\Omega}R^TR_d\Omega_d-R^TR_d\dot{\Omega}_d)\)
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Bottom row: Controller structure figure -->
+      <div style="min-height:0;display:flex;align-items:center;justify-content:center">
+        <img src="assets/controller_structure.png" style="max-width:100%;max-height:100%;object-fit:contain">
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- 27 PROPOSITION 1 ────────────────────────── -->
+<section data-label="27 Proposition 1">
+  <div class="s">
+    <div class="tag">Geometric Control · Stability</div>
+    <h2 class="title">Proposition 1 — Exponential Stability of Attitude</h2>
+    <div class="two c5050">
+      <div style="display:flex;flex-direction:column;gap:24px">
+        <div class="pbox">
+          <div class="plabel">Statement</div>
+          <div class="ptext">Suppose \(\Psi(R(0),R_d(0)) < 2\) and
+          $$\|e_\Omega(0)\|^2 < \frac{2k_R}{\lambda_{\max}(J)}\bigl(2 - \Psi(R(0),R_d(0))\bigr).$$
+          Then \((e_R, e_\Omega) = (0,0)\) is <strong>exponentially stable</strong>.</div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:20px">
+        <div class="body" style="font-size:27px;font-weight:600">Proof sketch — Lyapunov analysis:</div>
+        <div class="mbox" style="font-size:26px">
+          \(V_1 = \tfrac{1}{2}e_\Omega^T J e_\Omega + k_R\,\Psi(R, R_d)\)
+        </div>
+        <div class="mbox" style="font-size:26px">
+          \(z_2 = \begin{bmatrix}\|e_R\| \\ \|e_\Omega\|\end{bmatrix}\)
+        </div>
+        <div class="mbox" style="font-size:26px">
+          \(z_2^T M_{21}\, z_2 \leq V_1 \leq z_2^T M_{22}\, z_2\)
+        </div>
+        <div class="mbox" style="font-size:26px">
+          \(\dot{V}_1 \leq -z_2^T W_2\, z_2 \implies \dot{V}_1 \leq -\beta_1 V_1\) 
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 28 PROPOSITION 2 ────────────────────────── -->
+<section data-label="28 Proposition 2">
+  <div class="s">
+    <div class="tag">Geometric Control · Stability</div>
+    <h2 class="title">Proposition 2 — Exponential Stability of Full System</h2>
+    <div class="two c5050">
+      <div style="display:flex;flex-direction:column;gap:24px">
+        <div class="pbox">
+          <div class="plabel">Statement</div>
+          <div class="ptext">Suppose \(\Psi(R(0),R_d(0)) < 1\) and the controller gains satisfy certain growth conditions. Then \((e_x, e_v, e_R, e_\Omega) = 0\) is <strong>exponentially stable</strong>.</div>
+        </div>
+        <div class="call" style="font-size:25px">
+          Position tracking is driven by attitude error through thrust direction mismatch: \(Re_3 \neq R_d e_3\) when \(e_R \neq 0\).
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:20px">
+        <div class="body" style="font-size:27px;font-weight:600">Proof sketch — Lyapunov analysis:</div>
+        <div class="mbox" style="font-size:25px">
+          \(V = \tfrac{k_x}{2}\|e_x\|^2 + \tfrac{m}{2}\|e_v\|^2 + c\,e_x^T e_v + V_1\)
+        </div>
+        <div class="mbox" style="font-size:25px">
+          \(z_1 = \begin{bmatrix}\|e_x\| \\ \|e_v\|\end{bmatrix},\quad z_2 = \begin{bmatrix}\|e_R\| \\ \|e_\Omega\|\end{bmatrix}\)
+        </div>
+        <div class="mbox" style="font-size:24px">
+          \(z_1^T M_{11} z_1 + z_2^T M_{21} z_2 \leq V \leq z_1^T M_{12} z_1 + z_2^T M_{22}' z_2\)
+        </div>
+        <div class="mbox" style="font-size:24px">
+          \(\dot{V} \leq -z_1^T \tilde{W}_1 z_1 + z_1^T W_{12} z_2 - z_2^T W_2 z_2 = -z^T \tilde{W} z \implies \dot{V} \leq -\beta V\)
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 29 PROPOSITION 3 ────────────────────────── -->
+<section data-label="29 Proposition 3">
+  <div class="s s-tight">
+    <div class="tag">Geometric Control · Stability</div>
+    <h2 class="title sm">Proposition 3 — Almost-Global Exponential Attractiveness</h2>
+    <div class="two c5050">
+      <div style="display:flex;flex-direction:column;gap:20px">
+        <div class="defbox">
+          <div class="dlabel">Definition — Exponential Attractiveness</div>
+          <div class="dtext">\(z=0\) is <em>exponentially attractive</em> if \(\exists\,\delta>0\) and \(\alpha(\delta),\beta>0\) such that \(\|z(0)\|<\delta \implies \|z(t)\|\le\alpha(\delta)e^{-\beta t}\). Weaker than stability: \(\alpha\) need not be proportional to \(\|z(0)\|\).</div>
+        </div>
+        <div class="pbox">
+          <div class="plabel">Statement</div>
+          <div class="ptext" style="font-size:26px">Suppose \(1 \leq \Psi(R(0),R_d(0)) < 2\) and \(\|e_\Omega(0)\|^2 < \tfrac{2k_R}{\lambda_{\max}(J)}(2-\Psi(R(0),R_d(0)))\). Then the zero equilibrium is <strong>almost-globally exponentially attractive</strong>.</div>
+        </div>
+        <div class="call" style="font-size:25px">
+          "Almost-global": the unstable set is a codimension-1 manifold of measure zero — a topological obstruction intrinsic to SO(3).
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:18px">
+        <div class="body" style="font-size:26px;font-weight:600">Proof sketch:</div>
+        <ul class="bl sm" style="gap:16px">
+          <li>Initial conditions satisfy Prop. 1 → \((e_R, e_\Omega) \to 0\) exponentially</li>
+          <li>\(\exists\, t^*\): rotational state enters region of attraction of Prop. 2</li>
+          <li>On \([0,t^*]\): define \(V_3 = \tfrac{1}{2}\|e_x\|^2 + \tfrac{m}{2}\|e_v\|^2\). Gronwall's inequality gives \(\dot V_3 \leq (d_1+d_2)V_3\) → \(z_1\) bounded on \([0,t^*]\)</li>
+          <li>For \(t \geq t^*\): Prop. 2 applies → \(\|z(t)\| \leq C e^{-\beta(t-t^*)}\)</li>
+          <li>Combine: \(\|z(t)\| \leq \alpha(\delta)\,e^{-\beta t}\) for all \(t > 0\)</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 30 FEED-FORWARD & ALLOCATION ────────────── -->
+<section data-label="30 Feed-Forward & Allocation">
+  <div class="s s-tight">
+    <div class="tag">Geometric Control · Implementation</div>
+    <h2 class="title sm" style="margin-bottom:22px">Implementation Challenges</h2>
+
+    <div class="two c5050" style="gap:42px">
+
+      <!-- Left column: implementation convention + feed-forward -->
+      <div style="display:flex;flex-direction:column;gap:16px">
+
+        <div class="body" style="font-size:25px;font-weight:600">
+          Isaac Sim / Pegasus convention: \(z\)-axis points upward
+        </div>
+
+        <div class="call call-warn" style="font-size:22px;padding:14px 18px;line-height:1.4">
+          Lee et al. use a downward inertial \(e_3\). In implementation, \(e_3\) is upward, so gravity and the desired thrust-axis direction flip signs.
+        </div>
+
+        <div class="mbox" style="font-size:22px;padding:16px 20px;line-height:1.65">
+          <strong style="font-family:var(--sans);font-size:21px">Implemented dynamics:</strong><br>
+          \(m\ddot{x} = -mg e_3 + f R e_3\)
+        </div>
+
+        <div class="mbox" style="font-size:22px;padding:16px 20px;line-height:1.65">
+          <strong style="font-family:var(--sans);font-size:21px">Implemented trajectory-tracking force:</strong><br>
+          \(A = -k_x e_x - k_v e_v + mg e_3 + m\ddot{x}_d\)<br><br>
+          \(\vec{b}_{3d} = \dfrac{A}{\|A\|}, \quad f = A \cdot Re_3\)
+        </div>
+
+        <div class="call" style="font-size:22px;padding:14px 18px;line-height:1.45">
+          The sign flip affects gravity compensation and the direction of \(\vec b_{3d}\), but the closed-loop error structure remains the same when all signs are changed consistently.
+        </div>
+
+      </div>
+
+      <!-- Right column: allocation -->
+      <div style="display:flex;flex-direction:column;gap:16px">
+        <div class="body" style="font-size:25px;font-weight:600;margin-top:2px">
+          Analytic feed-forward terms
+        </div>
+
+        <div class="mbox" style="font-size:25px;padding:14px 18px;line-height:1.5">
+          $$\Omega_d =
+          \begin{bmatrix}
+          b_{3d}^\top\dot{b}_{2d} \\
+          b_{1d}^\top\dot{b}_{3d} \\
+          b_{2d}^\top\dot{b}_{1d}
+          \end{bmatrix},
+          \quad
+          \dot\Omega_d =
+          \begin{bmatrix}
+          \dot{b}_{3d}^\top\dot{b}_{2d} + b_{3d}^\top\ddot{b}_{2d} \\
+          \dot{b}_{1d}^\top\dot{b}_{3d} + b_{1d}^\top\ddot{b}_{3d} \\
+          \dot{b}_{2d}^\top\dot{b}_{1d} + b_{2d}^\top\ddot{b}_{1d}
+          \end{bmatrix}$$
+        </div>
+
+        <div class="body" style="font-size:25px;font-weight:600">
+          Control allocation matrix \(\Lambda\)
+        </div>
+
+        <div class="mbox" style="font-size:25px;padding:18px 20px;line-height:1.45">
+          $$\begin{bmatrix}
+          f \\ M_1 \\ M_2 \\ M_3
+          \end{bmatrix}
+          =
+          \begin{bmatrix}
+          k_f & k_f & k_f & k_f \\
+          -\tfrac{k_f d}{\sqrt{2}} & \tfrac{k_f d}{\sqrt{2}} & \tfrac{k_f d}{\sqrt{2}} & -\tfrac{k_f d}{\sqrt{2}} \\
+          -\tfrac{k_f d}{\sqrt{2}} & \tfrac{k_f d}{\sqrt{2}} & -\tfrac{k_f d}{\sqrt{2}} & \tfrac{k_f d}{\sqrt{2}} \\
+          -k_m & -k_m & k_m & k_m
+          \end{bmatrix}
+          \begin{bmatrix}
+          u_0 \\ u_1 \\ u_2 \\ u_3
+          \end{bmatrix}$$
+        </div>
+        
+
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 32 SECTION: BENCHMARK ───────────────────── -->
+<section data-label="32 Benchmark Section">
+  <div class="shdr">
+    <div class="part">Part III of III</div>
+    <div class="st">Five-Configuration<br>Benchmark</div>
+    <div class="sd">Isolating the contribution of each modelling assumption to closed-loop tracking error</div>
+  </div>
+</section>
+
+<!-- 33 FIVE CONFIGURATIONS ──────────────────── -->
+<section data-label="33 Configurations">
+  <div class="s">
+    <div class="tag">Benchmark</div>
+    <h2 class="title">Five Benchmark Configurations</h2>
+    <div style="flex:1;display:flex;flex-direction:column;justify-content:center">
+      <div style="display:grid;grid-template-columns:52px 200px 1fr 280px;padding:10px 22px;border-bottom:2px solid var(--ink)">
+        <div style="font-size:22px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--ink-3)">ID</div>
+        <div style="font-size:22px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--ink-3)">Name</div>
+        <div style="font-size:22px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--ink-3)">Body model &amp; force application</div>
+        <div style="font-size:22px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--ink-3);text-align:right">Integrator</div>
+      </div>
+      <div class="erow"><div class="eid">E1</div><div class="ename">Ideal block</div><div class="edesc">Single rigid body (F450 inertia) · \((f, M)\) at CoG · <em>Baseline</em></div><div class="eint">Isaac Sim PhysX</div></div>
+      <div class="erow"><div class="eid">E2</div><div class="ename">F450 lumped</div><div class="edesc">F450 articulation · \((f, M)\) applied at body CoG</div><div class="eint">Isaac Sim PhysX</div></div>
+      <div class="erow"><div class="eid">E3</div><div class="ename">F450 distributed</div><div class="edesc">F450 articulation · Per-rotor forces on rotor links + \(M_z\) on body</div><div class="eint">Isaac Sim PhysX</div></div>
+      <div class="erow hi"><div class="eid">E4</div><div class="ename">Custom RK4</div><div class="edesc">F450 params · Same force distribution as E3 · Custom ROS 2 solver</div><div class="eint">RK4 @ 250 Hz</div></div>
+      <div class="erow hi"><div class="eid">E5</div><div class="ename">Custom Euler</div><div class="edesc">Identical to E4 — only integration order changes</div><div class="eint">Fwd Euler @ 250 Hz</div></div>
+      <div style="padding:10px 22px;border-top:2px solid var(--ink);font-size:24px;color:var(--ink-3)">
+        Controller, gains, and reference trajectory are <strong>identical</strong> across all five configurations.
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 31 ROS2 VARIANT A ─────────────────────────── -->
+<section data-label="31 ROS2 Variant A">
+  <div class="s" style="padding-bottom:60px">
+    <div class="tag">Implementation · ROS 2 Architecture · Variant A — E1, E2, E3</div>
+    <h2 class="title sm">Isaac Sim + Pegasus Pipeline</h2>
+    <div style="flex:1"><img src="assets/Variant_A.png" class="img-full"></div>
+  </div>
+</section>
+
+<!-- 32 ROS2 VARIANT B ─────────────────────────── -->
+<section data-label="32 ROS2 Variant B">
+  <div class="s" style="padding-bottom:60px">
+    <div class="tag">Implementation · ROS 2 Architecture · Variant B — E4, E5</div>
+    <h2 class="title sm">Custom Physics Solver Pipeline</h2>
+    <div style="flex:1"><img src="assets/Variant_B.png" class="img-full"></div>
+  </div>
+</section>
+
+<!-- 33 ROS2 TOPICS ───────────────────────────── -->
+<section data-label="33 ROS2 Topics">
+  <div class="s s-tight">
+    <div class="tag">Implementation · ROS 2 Topic Bundles (namespace: /uav_0/)</div>
+    <h2 class="title sm">Topics Carried by Each Arrow</h2>
+    <div style="flex:1;display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:28px;align-items:start">
+
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <div style="font-family:var(--mono);font-size:26px;font-weight:600;color:var(--accent)">x &nbsp;<span style="font-size:20px;color:var(--ink-3)">state/</span></div>
+        <table class="dt" style="font-size:22px">
+          <tbody>
+            <tr><td style="padding:10px 12px"><code>pose</code></td><td style="padding:10px 12px;color:var(--ink-3)">World-frame position + orientation</td></tr>
+            <tr><td style="padding:10px 12px"><code>twist</code></td><td style="padding:10px 12px;color:var(--ink-3)">Body-frame lin. &amp; ang. velocity</td></tr>
+            <tr><td style="padding:10px 12px"><code>twist_inertial</code></td><td style="padding:10px 12px;color:var(--ink-3)">World-frame lin. &amp; ang. velocity</td></tr>
+            <tr><td style="padding:10px 12px"><code>accel</code></td><td style="padding:10px 12px;color:var(--ink-3)">Body-frame lin. &amp; ang. acceleration</td></tr>
+            <tr><td style="padding:10px 12px"><code>jerk</code></td><td style="padding:10px 12px;color:var(--ink-3)">Body-frame lin. jerk \(\dot{a}\)</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <div style="font-family:var(--mono);font-size:26px;font-weight:600;color:var(--accent)">x<sub>d</sub> &nbsp;<span style="font-size:20px;color:var(--ink-3)">trajectory/desired/</span></div>
+        <table class="dt" style="font-size:22px">
+          <tbody>
+            <tr><td style="padding:10px 12px"><code>position</code></td><td style="padding:10px 12px;color:var(--ink-3)">\(x_d(t)\)</td></tr>
+            <tr><td style="padding:10px 12px"><code>velocity</code></td><td style="padding:10px 12px;color:var(--ink-3)">\(\dot{x}_d\)</td></tr>
+            <tr><td style="padding:10px 12px"><code>acceleration</code></td><td style="padding:10px 12px;color:var(--ink-3)">\(\ddot{x}_d\)</td></tr>
+            <tr><td style="padding:10px 12px"><code>jerk</code></td><td style="padding:10px 12px;color:var(--ink-3)">\(x_d^{(3)}\), for \(\dot{A}\)</td></tr>
+            <tr><td style="padding:10px 12px"><code>snap</code></td><td style="padding:10px 12px;color:var(--ink-3)">\(x_d^{(4)}\), for \(\ddot{A}\)</td></tr>
+            <tr><td style="padding:10px 12px"><code>yaw</code></td><td style="padding:10px 12px;color:var(--ink-3)">\(\psi_d(t)\)</td></tr>
+            <tr><td style="padding:10px 12px"><code>yaw_rate</code></td><td style="padding:10px 12px;color:var(--ink-3)">\(\dot{\psi}_d\)</td></tr>
+            <tr><td style="padding:10px 12px"><code>yaw_acceleration</code></td><td style="padding:10px 12px;color:var(--ink-3)">\(\ddot{\psi}_d\)</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <div style="font-family:var(--mono);font-size:26px;font-weight:600;color:var(--accent)">u &nbsp;<span style="font-size:20px;color:var(--ink-3)">control/</span></div>
+        <table class="dt" style="font-size:22px">
+          <tbody>
+            <tr><td style="padding:10px 12px"><code>rotor0/ref</code></td><td style="padding:10px 12px;color:var(--ink-3)">Throttle \(u_0 \in [0,1]\)</td></tr>
+            <tr><td style="padding:10px 12px"><code>rotor1/ref</code></td><td style="padding:10px 12px;color:var(--ink-3)">Throttle \(u_1 \in [0,1]\)</td></tr>
+            <tr><td style="padding:10px 12px"><code>rotor2/ref</code></td><td style="padding:10px 12px;color:var(--ink-3)">Throttle \(u_2 \in [0,1]\)</td></tr>
+            <tr><td style="padding:10px 12px"><code>rotor3/ref</code></td><td style="padding:10px 12px;color:var(--ink-3)">Throttle \(u_3 \in [0,1]\)</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <div style="font-family:var(--mono);font-size:26px;font-weight:600;color:var(--accent)">f, M &nbsp;<span style="font-size:20px;color:var(--ink-3)">control/output/</span></div>
+        <table class="dt" style="font-size:22px">
+          <tbody>
+            <tr><td style="padding:10px 12px"><code>f</code></td><td style="padding:10px 12px;color:var(--ink-3)">Total thrust (E1, E2 only)</td></tr>
+            <tr><td style="padding:10px 12px"><code>M</code></td><td style="padding:10px 12px;color:var(--ink-3)">Body-frame moment (E1, E2 only)</td></tr>
+          </tbody>
+        </table>
+        <div class="call" style="font-size:23px;margin-top:8px">
+          All topics namespaced under <code>/uav_0/</code>. E3–E5 use only <strong>u</strong> (per-rotor throttle); E1–E2 use <strong>f</strong> and <strong>M</strong> directly.
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- 34 TRAJECTORY + 3D PLOT ─────────────────── -->
+<section data-label="34 Trajectory & 3D Path">
+  <div class="s">
+    <div class="tag">Benchmark</div>
+    <h2 class="title">Reference Trajectory &amp; 3D Path</h2>
+    <div class="two c5050">
+      <div style="display:flex;flex-direction:column;gap:20px">
+        <div class="mbox" style="font-size:26px">
+          \(x_d = a\sin(\omega t), \quad y_d = b(1-\cos(\omega t))\)<br>
+          \(z_d = z_0 + v_z\,t, \quad \psi_d = \omega t\)
+        </div>
+        <div class="small" style="font-size:25px">\(a{=}1\,\text{m},\ b{=}2\,\text{m},\ \omega{=}0.5\,\text{rad/s},\ v_z{=}0.1\,\text{m/s}\)<br>Duration: 3 revolutions \(\approx 37.7\,\text{s}\)</div>
+        <ul class="bl sm" style="gap:16px">
+          <li>Asymmetric semi-axes — axis-dependent errors cannot cancel</li>
+          <li>Exercises all 6 DoF simultaneously</li>
+          <li>Long enough for any unstable mode to grow</li>
+        </ul>
+      </div>
+      <div class="pf" style="flex:1">
+        <img src="assets/plots/path_xyz_3d.png">
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 35 POSITION ERROR ───────────────────────── -->
+<section data-label="35 Results: Position Error">
+  <div class="s">
+    <div class="tag">Benchmark · Results</div>
+    <h2 class="title">Position Error</h2>
+    <div style="flex:1" class="pf">
+      <img src="assets/plots/error_position.png">
+    </div>
+  </div>
+</section>
+
+<!-- 36 YAW + ATTITUDE + THROTTLE ───────────── -->
+<section data-label="36 Results: Attitude & Throttle">
+  <div class="s">
+    <div class="tag">Benchmark · Results</div>
+    <h2 class="title">Yaw Tracking, Attitude Error &amp; Throttle Commands</h2>
+    <div class="two c5050">
+      <div style="display:flex;flex-direction:column;gap:24px">
+        <div class="pf" style="flex:1"><img src="assets/plots/tracking_attitude_yaw.png"></div>
+        <div class="pf" style="flex:1"><img src="assets/plots/error_attitude.png"></div>
+      </div>
+      <div class="pf" style="flex:1"><img src="assets/plots/control_throttle_rotor1.png"></div>
+    </div>
+  </div>
+</section>
+
+<!-- 37 METRICS TABLE ────────────────────────── -->
+<section data-label="37 Metrics & Analysis">
+  <div class="s">
+    <div class="tag">Benchmark · Analysis</div>
+    <h2 class="title">Quantitative Metrics &amp; Contribution of Each Assumption</h2>
+    <div style="display:flex;flex-direction:column;gap:28px;flex:1">
+      <table class="dt">
+        <thead>
+          <tr>
+            <th>Configuration</th>
+            <th style="text-align:right">RMS \(\|e_x\|\) [m]</th>
+            <th style="text-align:right">Max \(\|e_x\|\) [m]</th>
+            <th style="text-align:right">RMS \(e_v\) [m/s]</th>
+            <th style="text-align:right">RMS \(e_R\) [rad]</th>
+            <th style="text-align:right">Max \(e_R\) [rad]</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>E1</strong> Ideal block</td><td class="num" style="text-align:right">0.368</td><td class="num" style="text-align:right">0.506</td><td class="num" style="text-align:right">0.208</td><td class="num" style="text-align:right">0.0323</td><td class="num" style="text-align:right">0.0405</td></tr>
+          <tr><td><strong>E2</strong> F450 lumped</td><td class="num" style="text-align:right">0.165</td><td class="num" style="text-align:right">0.241</td><td class="num" style="text-align:right">0.093</td><td class="num" style="text-align:right">0.0149</td><td class="num" style="text-align:right">0.0220</td></tr>
+          <tr><td><strong>E3</strong> F450 distributed</td><td class="num" style="text-align:right">0.133</td><td class="num" style="text-align:right">0.232</td><td class="num" style="text-align:right">0.089</td><td class="num" style="text-align:right">0.0147</td><td class="num" style="text-align:right">0.0235</td></tr>
+          <tr class="hi"><td><strong>E4</strong> Custom RK4</td><td class="num" style="text-align:right">0.009</td><td class="num" style="text-align:right">0.033</td><td class="num" style="text-align:right">0.010</td><td class="num" style="text-align:right">0.0005</td><td class="num" style="text-align:right">0.0057</td></tr>
+          <tr class="hi"><td><strong>E5</strong> Custom Euler</td><td class="num" style="text-align:right">0.011</td><td class="num" style="text-align:right">0.038</td><td class="num" style="text-align:right">0.010</td><td class="num" style="text-align:right">0.0008</td><td class="num" style="text-align:right">0.0100</td></tr>
+        </tbody>
+      </table>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:24px">
+        <div class="call" style="font-size:25px"><strong>E1→E2:</strong> Articulation halves error. Single-rigid-body is a worse model than the articulated F450.</div>
+        <div class="call" style="font-size:25px"><strong>E3→E4:</strong> Replacing PhysX with RK4 gives a <strong>14× error reduction</strong> with identical parameters.</div>
+        <div class="call" style="font-size:25px"><strong>E4 vs E5:</strong> Euler only ~20% worse than RK4 at 250 Hz — integration framework matters more than order.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 38 CONCLUSIONS ──────────────────────────── -->
+<section data-label="38 Conclusions">
+  <div class="s">
+    <div class="tag">Conclusion</div>
+    <h2 class="title">Conclusions &amp; Future Work</h2>
+    <div class="two c5050">
+      <div style="display:flex;flex-direction:column;gap:24px">
+        <div style="font-size:30px;font-weight:600;color:var(--ink)">Findings</div>
+        <ul class="bl sm">
+          <li>Isaac Sim PhysX: <strong>13–37 cm RMS position error</strong> on the elliptic-helix trajectory</li>
+          <li>Custom RK4 solver: <strong>~0.9 cm RMS</strong> — 15× improvement with identical parameters</li>
+          <li>Dominant error source: <strong>PhysX integration</strong>, not vehicle model fidelity</li>
+          <li>Articulation model (E2/E3) is more accurate than single-rigid-body baseline (E1)</li>
+          <li>Forward Euler at 250 Hz is competitive with RK4 at the same rate</li>
+        </ul>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:24px">
+        <div style="font-size:30px;font-weight:600;color:var(--ink)">Future Work</div>
+        <ul class="bl sm">
+          <li>Measure rolling-moment coefficient \(k_m\) on a torque bench</li>
+          <li>Hardware experiments to close the sim-to-real loop</li>
+          <li>Investigate tighter PhysX solver settings (sub-step count, contact solver iterations)</li>
+          <li>Extend benchmark to agile trajectories and hover perturbation experiments</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 39 VIDEO ────────────────────────────────── -->
+<section data-label="39 Simulation Video">
+  <div class="s">
+    <div class="tag">Demo</div>
+    <h2 class="title sm">E3 (F450 Distributed) — Elliptic Helix in Isaac Sim</h2>
+    <div class="vid">
+      <video src="assets/helix_isaacsim.mp4" controls loop muted playsinline></video>
+    </div>
+  </div>
+</section>
+
+<!-- 40 THANK YOU ────────────────────────────── -->
+<section data-label="40 Thank You">
+  <div style="
+    width:100%;
+    height:100%;
+    box-sizing:border-box;
+    background:#ffffff;
+    color:var(--ink);
+    display:grid;
+    grid-template-columns:1.1fr 0.9fr;
+    padding:110px 140px;
+    border-left:8px solid var(--accent);
+    font-family:var(--sans);
+  ">
+
+    <!-- Left side -->
+    <div style="display:flex;flex-direction:column;justify-content:center;gap:34px">
+      <div class="tag" style="margin:0">MEng Project · Final Presentation</div>
+
+      <div style="
+        font-family:var(--serif);
+        font-size:92px;
+        font-weight:700;
+        line-height:1.02;
+        letter-spacing:-0.02em;
+        color:var(--ink);
+      ">
+        Thank you!
+      </div>
+
+      <div style="
+        width:120px;
+        height:4px;
+        background:var(--accent);
+        border-radius:999px;
+      "></div>
+
+      <div style="
+        font-size:34px;
+        line-height:1.5;
+        color:var(--ink-2);
+        max-width:880px;
+      ">
+        Questions? Comments?
+      </div>
+    </div>
+
+    <!-- Right side -->
+    <div style="
+      display:flex;
+      flex-direction:column;
+      justify-content:center;
+      gap:28px;
+      border-left:1px solid var(--rule);
+      padding-left:70px;
+    ">
+
+      <div>
+        <div style="
+          font-family:var(--mono);
+          font-size:22px;
+          text-transform:uppercase;
+          letter-spacing:0.08em;
+          color:var(--accent);
+          margin-bottom:12px;
+        ">
+          Presenter
+        </div>
+        <div style="
+          font-family:var(--serif);
+          font-size:42px;
+          font-weight:600;
+          color:var(--ink);
+          line-height:1.2;
+        ">
+          Zouhair Adam Hamaimou
+        </div>
+      </div>
+
+      <div>
+        <div style="
+          font-family:var(--mono);
+          font-size:22px;
+          text-transform:uppercase;
+          letter-spacing:0.08em;
+          color:var(--accent);
+          margin-bottom:12px;
+        ">
+          Supervision
+        </div>
+        <div style="
+          font-size:30px;
+          line-height:1.45;
+          color:var(--ink-2);
+        ">
+          Professor Liu<br>
+          Dr. Longhao Qian<br>
+          UTIAS Flight Systems and Control Lab
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+</deck-stage>
+<script>
+(function () {
+  let notesWindow = null;
+  let timerStartMs = null;
+  let lastRenderedIndex = -1;
+
+  function getDeck() {
+    return document.querySelector("deck-stage");
+  }
+
+  function getSlides() {
+    const deck = getDeck();
+    if (!deck) return [];
+    return Array.from(deck.children).filter((el) => {
+      return !["SCRIPT", "STYLE", "TEMPLATE"].includes(el.tagName);
+    });
+  }
+
+  function getDeckIndex() {
+    const deck = getDeck();
+    if (!deck) return 0;
+
+    if (typeof deck.index === "number") {
+      return deck.index;
+    }
+
+    const active = deck.querySelector("[data-deck-active]");
+    if (active && active.hasAttribute("data-deck-slide")) {
+      return Number(active.getAttribute("data-deck-slide")) || 0;
+    }
+
+    const hashMatch = String(location.hash || "").match(/^#(\d+)$/);
+    if (hashMatch) return Math.max(0, Number(hashMatch[1]) - 1);
+
+    return 0;
+  }
+
+  function getNotes() {
+    const tag = document.getElementById("speaker-notes");
+    if (!tag) return [];
+    try {
+      const parsed = JSON.parse(tag.textContent || "[]");
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (err) {
+      console.error("Could not parse #speaker-notes JSON:", err);
+      return [];
+    }
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+  }
+
+  function formatElapsed(ms) {
+    const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${String(seconds).padStart(2, "0")}`;
+  }
+
+  function openNotesWindow() {
+    if (timerStartMs === null) {
+      timerStartMs = Date.now();
+    }
+
+    if (notesWindow && !notesWindow.closed) {
+      notesWindow.focus();
+      renderNotes(true);
+      return;
+    }
+
+    notesWindow = window.open(
+      "",
+      "speaker-notes-window",
+      "width=980,height=820,left=80,top=80"
+    );
+
+    if (!notesWindow) {
+      alert("Popup blocked. Allow popups for this file, then press N again.");
+      return;
+    }
+
+    notesWindow.document.open();
+    notesWindow.document.write(`
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <title>Speaker Notes</title>
+        <style>
+          :root {
+            --bg: #0f1117;
+            --panel: #171a23;
+            --panel-2: #202431;
+            --ink: #f5f7fb;
+            --ink-2: #c5cad6;
+            --ink-3: #7f8797;
+            --accent: #5aa9e6;
+            --rule: rgba(255,255,255,0.12);
+          }
+          * { box-sizing: border-box; }
+          body {
+            margin: 0;
+            background: var(--bg);
+            color: var(--ink);
+            font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          }
+          .wrap {
+            min-height: 100vh;
+            display: grid;
+            grid-template-rows: auto 1fr auto;
+          }
+          header {
+            padding: 22px 28px;
+            border-bottom: 1px solid var(--rule);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 24px;
+            background: var(--panel);
+          }
+          .kicker {
+            font-size: 13px;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--accent);
+            font-weight: 800;
+            margin-bottom: 8px;
+          }
+          #slideTitle {
+            font-size: 26px;
+            font-weight: 750;
+            line-height: 1.2;
+          }
+          .meta {
+            text-align: right;
+            color: var(--ink-2);
+            font-size: 15px;
+            line-height: 1.6;
+            white-space: nowrap;
+          }
+          main {
+            padding: 28px;
+            display: grid;
+            grid-template-rows: 1fr auto;
+            gap: 22px;
+          }
+          .note {
+            background: var(--panel);
+            border: 1px solid var(--rule);
+            border-radius: 14px;
+            padding: 30px;
+            font-size: 30px;
+            line-height: 1.45;
+            overflow: auto;
+            white-space: pre-wrap;
+          }
+          .next {
+            background: var(--panel-2);
+            border: 1px solid var(--rule);
+            border-radius: 14px;
+            padding: 18px 22px;
+          }
+          .next .label {
+            color: var(--accent);
+            font-size: 13px;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            font-weight: 800;
+            margin-bottom: 8px;
+          }
+          .next #nextNote {
+            color: var(--ink-2);
+            font-size: 18px;
+            line-height: 1.4;
+            max-height: 112px;
+            overflow: hidden;
+            white-space: pre-wrap;
+          }
+          footer {
+            padding: 18px 28px;
+            border-top: 1px solid var(--rule);
+            background: var(--panel);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 18px;
+          }
+          button {
+            appearance: none;
+            border: 1px solid var(--rule);
+            background: var(--panel-2);
+            color: var(--ink);
+            border-radius: 999px;
+            padding: 11px 18px;
+            font-size: 15px;
+            font-weight: 700;
+            cursor: pointer;
+          }
+          button:hover { border-color: var(--accent); }
+          .hint {
+            color: var(--ink-3);
+            font-size: 14px;
+            text-align: right;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="wrap">
+          <header>
+            <div>
+              <div class="kicker">Speaker Notes</div>
+              <div id="slideTitle">Slide</div>
+            </div>
+            <div class="meta">
+              <div id="slideCount">Slide 1 / 1</div>
+              <div id="elapsed">Elapsed 0:00</div>
+            </div>
+          </header>
+
+          <main>
+            <div class="note" id="currentNote"></div>
+            <div class="next">
+              <div class="label">Next slide</div>
+              <div id="nextNote"></div>
+            </div>
+          </main>
+
+          <footer>
+            <div>
+              <button id="prevBtn">← Previous</button>
+              <button id="nextBtn">Next →</button>
+              <button id="resetTimerBtn">Reset Timer</button>
+            </div>
+            <div class="hint">Use ← / → / Space here or on the main deck.</div>
+          </footer>
+        </div>
+      </body>
+      </html>
+    `);
+    notesWindow.document.close();
+
+    notesWindow.document.getElementById("prevBtn").addEventListener("click", () => getDeck()?.prev());
+    notesWindow.document.getElementById("nextBtn").addEventListener("click", () => getDeck()?.next());
+    notesWindow.document.getElementById("resetTimerBtn").addEventListener("click", () => {
+      timerStartMs = Date.now();
+      renderNotes(true);
+    });
+
+    notesWindow.document.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowRight" || event.key === "PageDown" || event.key === " ") {
+        event.preventDefault();
+        getDeck()?.next();
+        renderNotes(true);
+      } else if (event.key === "ArrowLeft" || event.key === "PageUp") {
+        event.preventDefault();
+        getDeck()?.prev();
+        renderNotes(true);
+      } else if (event.key === "Home") {
+        event.preventDefault();
+        getDeck()?.goTo?.(0);
+        renderNotes(true);
+      } else if (event.key === "End") {
+        event.preventDefault();
+        const deck = getDeck();
+        if (deck) deck.goTo?.(deck.length - 1);
+        renderNotes(true);
+      }
+    });
+
+    renderNotes(true);
+  }
+
+  function renderNotes(force = false) {
+    if (!notesWindow || notesWindow.closed) return;
+
+    const notes = getNotes();
+    const slides = getSlides();
+    const index = getDeckIndex();
+    const total = Math.max(slides.length, notes.length, 1);
+
+    if (timerStartMs === null) timerStartMs = Date.now();
+
+    const slide = slides[index];
+    const nextSlide = slides[index + 1];
+
+    const label =
+      slide?.getAttribute("data-label") ||
+      slide?.getAttribute("data-screen-label") ||
+      `Slide ${index + 1}`;
+
+    const nextLabel =
+      nextSlide?.getAttribute("data-label") ||
+      nextSlide?.getAttribute("data-screen-label") ||
+      (index + 1 < total ? `Slide ${index + 2}` : "End");
+
+    const note = notes[index] || "No speaker notes for this slide.";
+    const nextNote =
+      index + 1 < total
+        ? `${nextLabel}: ${notes[index + 1] || "No speaker notes."}`
+        : "End of presentation.";
+
+    const doc = notesWindow.document;
+
+    if (force || index !== lastRenderedIndex) {
+      doc.getElementById("slideTitle").innerHTML = escapeHtml(label);
+      doc.getElementById("slideCount").textContent = `Slide ${index + 1} / ${total}`;
+      doc.getElementById("currentNote").innerHTML = escapeHtml(note);
+      doc.getElementById("nextNote").innerHTML = escapeHtml(nextNote);
+      lastRenderedIndex = index;
+    }
+
+    doc.getElementById("elapsed").textContent =
+      `Elapsed ${formatElapsed(Date.now() - timerStartMs)}`;
+  }
+
+  function attachDeckListener() {
+    const deck = getDeck();
+    if (!deck) return;
+
+    deck.addEventListener("slidechange", () => {
+      renderNotes(true);
+    });
+  }
+
+  document.addEventListener("keydown", (event) => {
+    const target = event.target;
+    const isTyping =
+      target &&
+      (target.isContentEditable ||
+        ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
+
+    if (isTyping || event.metaKey || event.ctrlKey || event.altKey) return;
+
+    if (event.key === "n" || event.key === "N") {
+      event.preventDefault();
+      openNotesWindow();
+    }
+  });
+
+  setInterval(() => {
+    renderNotes(false);
+  }, 250);
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", attachDeckListener);
+  } else {
+    attachDeckListener();
+  }
+})();
+</script>
+</body>
+</html>

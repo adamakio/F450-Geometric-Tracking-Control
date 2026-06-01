@@ -1,0 +1,9 @@
+Metric                        Symbol       E1        E2        E3        E4        E5      
+----------------------------  -----------  --------  --------  --------  --------  --------
+RMS position error            RMS_e_x      0.368071  0.164662  0.132884  0.009285  0.010711
+Max position error            max_e_x      0.505839  0.240656  0.232299  0.032645  0.037888
+RMS velocity error            RMS_e_v      0.208495  0.093368  0.088661  0.010012  0.009564
+RMS attitude error            RMS_e_R      0.032275  0.014947  0.014650  0.000505  0.000818
+Max attitude error            max_e_R      0.040539  0.022005  0.023535  0.005695  0.009952
+RMS angular-velocity error    RMS_e_Omega  0.089470  0.073984  0.085857  0.001241  0.001882
+Throttle saturation fraction  sigma_u      0.000000  0.000049  0.000000  0.000000  0.000000

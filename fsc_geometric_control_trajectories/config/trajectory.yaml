@@ -1,0 +1,10 @@
+/**/trajectory_publisher:
+  ros__parameters:
+    publish_rate: 250.0
+    trajectory_type: "hover"  # hover | yaw_spin | circle | figure_eight | elliptic_helix
+    hover_position: [0.0, 0.0, 1.0]
+    hover_yaw: 0.0
+    yaw_spin_rate: 0.05
+    level_height: 1.0
+    radius: 2.0
+    angular_velocity: 0.5
